@@ -1,0 +1,382 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/lib/useAuth";
+import type { FestivalTeam, ScoreEvent } from "@/lib/types";
+import { CATEGORY_LABELS, TEAM_COLORS } from "@/lib/types";
+import PageHeader from "@/components/ui/PageHeader";
+import BouillePong from "@/components/features/scores/BouillePong";
+
+// ── bingo data ────────────────────────────────────────────────
+
+const BINGO_CELLS: { label: string; difficulty: "facile" | "moyen" | "difficile" | "hardcore"; center?: boolean }[] = [
+  { label: "Faire une couronne de fleurs",                                           difficulty: "moyen" },
+  { label: "Créer un totem d'équipe",                                               difficulty: "moyen" },
+  { label: "Faire son drapeau d'équipe",                                            difficulty: "moyen" },
+  { label: "Trouver 15 variétés de fleurs différentes",                             difficulty: "difficile" },
+  { label: "Bite chatte couille en sub 30s (3p min)",                               difficulty: "hardcore" },
+  { label: "Gagner la finale du Bouille Pong",                                      difficulty: "hardcore" },
+  { label: "Faire un plongeon synchronisé dans l'étang Rambouboat (toute l'équipe)", difficulty: "difficile" },
+  { label: "Faire un happening pendant la Flower Party",                            difficulty: "difficile" },
+  { label: "Offrir un bouquet de fleurs à Lili",                                    difficulty: "moyen" },
+  { label: "Faire le brame devant Yves",                                            difficulty: "difficile" },
+  { label: "Faire un selfy avec Lucky",                                             difficulty: "facile" },
+  { label: "Manger quelque chose dans chacune des 2 maisons le même repas",         difficulty: "difficile" },
+  { label: "LOLAPABOUILLET",                                                        difficulty: "facile", center: true },
+  { label: "Faire une photo d'équipe fleurie",                                      difficulty: "facile" },
+  { label: "Manger du camembert dans le sauna",                                     difficulty: "moyen" },
+  { label: "Gagner un duel au Colt type Rambou-West",                               difficulty: "moyen" },
+  { label: "Recouvrir une personne de fleurs",                                      difficulty: "moyen" },
+  { label: "Trouver 7 miradors / cabanes",                                          difficulty: "moyen" },
+  { label: "Revisite de la scène iconique de la Femme Phoque",                      difficulty: "difficile" },
+  { label: "Peinture corporelle fleur",                                             difficulty: "moyen" },
+  { label: "Trouver 15 animaux différents",                                         difficulty: "moyen" },
+  { label: "Raviver le Rambouboat",                                                 difficulty: "difficile" },
+  { label: "Chanter la musique de Burger King",                                     difficulty: "facile" },
+  { label: "Finir le relais du rhum",                                               difficulty: "difficile" },
+  { label: "Retrouver la claquette de Sev",                                         difficulty: "hardcore" },
+];
+
+const DIFFICULTY_CONFIG = {
+  facile:    { emoji: "🌿", label: "Facile",    pts: "1 pt",  bg: "#F0FBF7", border: "#B8E4D8", text: "#2D8A6A" },
+  moyen:     { emoji: "🌸", label: "Moyen",     pts: "2 pts", bg: "#FFF0F5", border: "#F4A7B9", text: "#C4607A" },
+  difficile: { emoji: "💮", label: "Difficile", pts: "3 pts", bg: "#F5F0FF", border: "#C9B8E8", text: "#7B5EA7" },
+  hardcore:  { emoji: "🔥", label: "Hardcore",  pts: "5 pts", bg: "#FFF5EC", border: "#FFB347", text: "#CC6600" },
+};
+
+// ── types ─────────────────────────────────────────────────────
+
+type TeamTotal = FestivalTeam & { total: number };
+type Tab = "classement" | "bouille_pong" | "bingo";
+
+// ── helpers ───────────────────────────────────────────────────
+
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "à l'instant";
+  if (mins < 60) return `il y a ${mins}min`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `il y a ${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  return `il y a ${days}j`;
+}
+
+function teamColors(color: FestivalTeam["color"]) {
+  return TEAM_COLORS[color] ?? TEAM_COLORS.white;
+}
+
+// ── component ─────────────────────────────────────────────────
+
+export default function ScoresPage() {
+  const { isAdmin } = useAuth();
+  const [tab,           setTab]           = useState<Tab>("classement");
+  const [teams,         setTeams]         = useState<TeamTotal[]>([]);
+  const [events,        setEvents]        = useState<ScoreEvent[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  const [scoresVisible, setScoresVisible] = useState(true);
+
+  async function load() {
+    const [{ data: teamsData }, { data: eventsData }, { data: settingData }] = await Promise.all([
+      supabase.from("festival_teams").select("*"),
+      supabase
+        .from("score_events")
+        .select("*, team:festival_teams(*)")
+        .order("created_at", { ascending: false }),
+      supabase.from("settings").select("value").eq("key", "scores_visible").maybeSingle(),
+    ]);
+
+    const rawEvents = (eventsData ?? []) as unknown as ScoreEvent[];
+    const rawTeams  = (teamsData  ?? []) as FestivalTeam[];
+
+    const totals: TeamTotal[] = rawTeams
+      .map((team) => ({
+        ...team,
+        total: rawEvents
+          .filter((e) => e.team_id === team.id)
+          .reduce((sum, e) => sum + e.points, 0),
+      }))
+      .sort((a, b) => b.total - a.total);
+
+    setTeams(totals);
+    setEvents(rawEvents);
+    setScoresVisible((settingData as { value: string } | null)?.value !== "false");
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
+
+    const channel = supabase
+      .channel("scores")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "score_events" },
+        () => load()
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── podium ────────────────────────────────────────────────────
+
+  const [first, second, third, ...rest] = teams;
+
+  // ── render ────────────────────────────────────────────────────
+
+  if (!loading && !scoresVisible && !isAdmin) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 gap-3">
+        <span className="text-4xl">🏆</span>
+        <p className="text-sm font-bold" style={{ color: "#2D2D2D55" }}>
+          Les scores arrivent bientôt...
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <PageHeader title="🏆 Scores" subtitle="Qui va gagner ?" />
+
+      {/* Tab switcher */}
+      <div className="flex gap-2 px-4 pb-3">
+        {(["classement", "bouille_pong", "bingo"] as Tab[]).map((t) => {
+          const labels: Record<Tab, string> = {
+            classement:   "🏆 Classement",
+            bouille_pong: "🏓 Bouille Pong",
+            bingo:        "Bingo 🎯",
+          };
+          return (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`flex-1 py-2 rounded-full text-sm font-semibold transition-all duration-150 ${
+                tab === t
+                  ? "bg-pink text-white shadow-[0_4px_14px_0_rgba(244,167,185,0.45)]"
+                  : "border border-pink text-pink bg-transparent hover:bg-pink/10"
+              }`}
+            >
+              {labels[t]}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="px-4 pb-28 space-y-6">
+
+        {/* ── TAB 1: Classement ── */}
+        {tab === "classement" && (
+          <>
+            {loading ? (
+              <div className="space-y-3">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="h-24 rounded-3xl animate-pulse bg-pink/15" />
+                ))}
+              </div>
+            ) : teams.length === 0 ? (
+              <div className="py-16 text-center space-y-2">
+                <p className="text-4xl">🏆</p>
+                <p className="text-sm text-charcoal/40">Aucune équipe encore</p>
+              </div>
+            ) : (
+              <>
+                {/* ── Podium ── */}
+                <div className="flex items-end justify-center gap-3 pt-2">
+                  {/* 2nd place */}
+                  {second && (
+                    <PodiumCard team={second} medal="🥈" height="h-28" />
+                  )}
+                  {/* 1st place */}
+                  {first && (
+                    <PodiumCard team={first} medal="👑" height="h-36" />
+                  )}
+                  {/* 3rd place */}
+                  {third && (
+                    <PodiumCard team={third} medal="🥉" height="h-24" />
+                  )}
+                </div>
+
+                {/* ── Full ranking (4th onwards) ── */}
+                {rest.length > 0 && (
+                  <div className="rounded-3xl overflow-hidden border border-charcoal/8">
+                    {rest.map((team, i) => {
+                      const c = teamColors(team.color);
+                      return (
+                        <div
+                          key={team.id}
+                          className="flex items-center gap-3 px-4 py-3 border-b border-charcoal/6 last:border-0"
+                          style={{ background: i % 2 === 0 ? "white" : "#FFF8F0" }}
+                        >
+                          <span className="text-sm font-black text-charcoal/30 w-5 text-center tabular-nums">
+                            {i + 4}
+                          </span>
+                          <span
+                            className="w-8 h-8 rounded-full flex items-center justify-center text-base shrink-0"
+                            style={{ background: c.bg, border: `1px solid ${c.border}` }}
+                          >
+                            {team.emoji}
+                          </span>
+                          <span className="flex-1 text-sm font-semibold text-charcoal">
+                            {team.name}
+                          </span>
+                          <span
+                            className="text-base font-black tabular-nums"
+                            style={{ color: c.text }}
+                          >
+                            {team.total} pts
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* ── Points history ── */}
+                {events.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-[11px] font-extrabold uppercase tracking-widest text-charcoal/40 px-1">
+                      Historique
+                    </p>
+                    <div className="rounded-3xl overflow-hidden border border-charcoal/8">
+                      {events.map((e, i) => {
+                        const c = teamColors(e.team?.color ?? "white");
+                        return (
+                          <div
+                            key={e.id}
+                            className="flex items-start gap-3 px-4 py-3 border-b border-charcoal/6 last:border-0 border-l-4"
+                            style={{
+                              background:  i % 2 === 0 ? "white" : "#FFF8F0",
+                              borderLeftColor: c.border,
+                            }}
+                          >
+                            <span className="text-xl leading-tight shrink-0 mt-0.5">
+                              {e.team?.emoji ?? "🏆"}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-bold text-charcoal">
+                                  {e.team?.name ?? "Équipe"}
+                                </span>
+                                <span
+                                  className="text-xs font-black tabular-nums px-1.5 py-0.5 rounded-full"
+                                  style={{ background: c.bg, color: c.text }}
+                                >
+                                  +{e.points} pts
+                                </span>
+                              </div>
+                              <p className="text-xs text-charcoal/50 mt-0.5">
+                                {CATEGORY_LABELS[e.category]}
+                                {e.description && ` · ${e.description}`}
+                              </p>
+                            </div>
+                            <span className="text-[10px] text-charcoal/35 shrink-0 mt-1">
+                              {e.created_at ? timeAgo(e.created_at) : ""}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {/* ── TAB 2: Bouille Pong ── */}
+        {tab === "bouille_pong" && <BouillePong />}
+
+        {/* ── TAB 3: Bingo ── */}
+        {tab === "bingo" && (
+          <div className="space-y-4">
+            <p className="text-[11px] font-extrabold uppercase tracking-widest text-charcoal/40 px-1">
+              Bingo Bouillet 🎯
+            </p>
+
+            {/* Legend */}
+            <div className="flex flex-wrap gap-2 px-1">
+              {(Object.entries(DIFFICULTY_CONFIG) as [keyof typeof DIFFICULTY_CONFIG, typeof DIFFICULTY_CONFIG[keyof typeof DIFFICULTY_CONFIG]][]).map(([key, cfg]) => (
+                <span
+                  key={key}
+                  className="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold border"
+                  style={{ background: cfg.bg, borderColor: cfg.border, color: cfg.text }}
+                >
+                  {cfg.emoji} {cfg.label} · {cfg.pts}
+                </span>
+              ))}
+            </div>
+
+            {/* 5×5 grid */}
+            <div className="grid grid-cols-5 gap-1.5">
+              {BINGO_CELLS.map((cell, i) => {
+                if (cell.center) {
+                  return (
+                    <div
+                      key={i}
+                      className="rounded-2xl p-1.5 flex flex-col items-center justify-center text-center min-h-[72px] border-2"
+                      style={{ background: "#F4A7B9", borderColor: "#e8839a" }}
+                    >
+                      <span className="text-[11px] font-black uppercase leading-tight text-white">
+                        {cell.label}
+                      </span>
+                    </div>
+                  );
+                }
+                const cfg = DIFFICULTY_CONFIG[cell.difficulty];
+                return (
+                  <div
+                    key={i}
+                    className="rounded-2xl p-1.5 flex flex-col items-center justify-center text-center min-h-[72px] relative border"
+                    style={{ background: cfg.bg, borderColor: cfg.border }}
+                  >
+                    <span className="absolute top-1 right-1 text-[10px] leading-none">{cfg.emoji}</span>
+                    <span
+                      className="text-[9px] font-bold uppercase leading-tight"
+                      style={{ color: cfg.text }}
+                    >
+                      {cell.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ── PodiumCard ────────────────────────────────────────────────
+
+function PodiumCard({
+  team,
+  medal,
+  height,
+}: {
+  team: TeamTotal;
+  medal: string;
+  height: string;
+}) {
+  const c = TEAM_COLORS[team.color] ?? TEAM_COLORS.white;
+  return (
+    <div
+      className={`flex-1 ${height} rounded-3xl flex flex-col items-center justify-center gap-1 px-2 shadow-sm border`}
+      style={{ background: c.bg, borderColor: c.border }}
+    >
+      <span className="text-xl leading-none">{medal}</span>
+      <span className="text-2xl leading-none">{team.emoji}</span>
+      <span className="text-[11px] font-bold text-center leading-tight" style={{ color: c.text }}>
+        {team.name}
+      </span>
+      <span className="text-lg font-black tabular-nums leading-tight" style={{ color: c.text }}>
+        {team.total}
+        <span className="text-[10px] font-semibold ml-0.5">pts</span>
+      </span>
+    </div>
+  );
+}
