@@ -1,46 +1,53 @@
-import { createServerClient } from "@supabase/auth-helpers-nextjs";
+import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 export async function middleware(req: NextRequest) {
-  let res = NextResponse.next({
-    request: { headers: req.headers },
-  });
+  let supabaseResponse = NextResponse.next({ request: req });
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get: (name) => req.cookies.get(name)?.value,
-        set: (name, value, options) => {
-          res.cookies.set({ name, value, ...options });
+        getAll() {
+          return req.cookies.getAll();
         },
-        remove: (name, options) => {
-          res.cookies.set({ name, value: "", ...options });
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value }) => req.cookies.set(name, value));
+          supabaseResponse = NextResponse.next({ request: req });
+          cookiesToSet.forEach(({ name, value, options }) =>
+            supabaseResponse.cookies.set(name, value, options)
+          );
         },
       },
     }
   );
 
-  const { data: { session } } = await supabase.auth.getSession();
+  // getUser() verifies the JWT with the Supabase Auth server on every call.
+  // getSession() only reads cookies and can serve stale/tampered data.
+  const { data: { user } } = await supabase.auth.getUser();
 
   const isAuthPage  = req.nextUrl.pathname.startsWith("/auth");
   const isAdminPage = req.nextUrl.pathname.startsWith("/admin");
 
-  if (!session && !isAuthPage) {
-    return NextResponse.redirect(new URL("/auth", req.url));
+  if (!user && !isAuthPage) {
+    const url = req.nextUrl.clone();
+    url.pathname = "/auth";
+    return NextResponse.redirect(url);
   }
 
-  if (session && isAuthPage) {
-    return NextResponse.redirect(new URL("/announcements", req.url));
+  if (user && isAuthPage) {
+    const url = req.nextUrl.clone();
+    url.pathname = "/announcements";
+    return NextResponse.redirect(url);
   }
 
   // /admin routes pass through here for authenticated users.
   // Non-admins hitting /admin are redirected by app/admin/layout.tsx.
   void isAdminPage;
 
-  return res;
+  return supabaseResponse;
 }
 
 export const config = {
