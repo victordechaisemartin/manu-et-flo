@@ -11,7 +11,7 @@ const withPWA = withPWAInit({
         urlPattern: /^https?.*/,
         handler: "NetworkFirst",
         options: {
-          cacheName: "lolapabouillet-pages",
+          cacheName: "manu-et-flo-pages",
           networkTimeoutSeconds: 3,
           expiration: { maxEntries: 50, maxAgeSeconds: 86400 },
         },
@@ -20,7 +20,7 @@ const withPWA = withPWAInit({
         urlPattern: /\/_next\/static\/.*/,
         handler: "CacheFirst",
         options: {
-          cacheName: "lolapabouillet-static",
+          cacheName: "manu-et-flo-static",
           expiration: { maxEntries: 100, maxAgeSeconds: 604800 },
         },
       },
@@ -28,7 +28,7 @@ const withPWA = withPWAInit({
         urlPattern: /\.(png|jpg|jpeg|svg|gif|webp|ico)$/,
         handler: "CacheFirst",
         options: {
-          cacheName: "lolapabouillet-images",
+          cacheName: "manu-et-flo-images",
           expiration: { maxEntries: 60, maxAgeSeconds: 604800 },
         },
       },
